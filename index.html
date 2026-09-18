@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rice Ball Ninja — Voice Studio</title>
+<style>
+:root{color-scheme:dark;--bg:#0b0d10;--panel:#14181e;--line:#28303a;--text:#edf2f7;--muted:#9aa6b2;--accent:#f4c95d;--danger:#ff7b72}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#1b222b 0,#0b0d10 48%);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:1050px;margin:0 auto;padding:28px 18px 60px}.top{display:flex;justify-content:space-between;gap:20px;align-items:end;margin-bottom:20px}h1{margin:0;font-size:30px}.sub{color:var(--muted);margin:5px 0 0}.status{padding:8px 12px;border:1px solid var(--line);border-radius:999px;background:#101419;color:var(--muted)}
+.grid{display:grid;grid-template-columns:320px 1fr;gap:16px}.card{background:rgba(20,24,30,.94);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:0 14px 45px #0004}h2{font-size:16px;margin:0 0 12px}.row{display:flex;gap:8px;align-items:center}.stack>*+*{margin-top:10px}
+input,textarea,select,button{font:inherit}input[type=text],textarea,select{width:100%;background:#0d1116;color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px}textarea{min-height:310px;resize:vertical}
+button{border:1px solid var(--line);background:#202731;color:var(--text);border-radius:10px;padding:9px 12px;cursor:pointer}button:hover{filter:brightness(1.12)}button.primary{background:var(--accent);color:#111;border-color:var(--accent);font-weight:700}button:disabled{opacity:.45;cursor:not-allowed}
+.voice{display:flex;gap:8px;align-items:center;padding:9px;border:1px solid var(--line);border-radius:10px;margin-top:8px}.voice .name{flex:1;overflow:hidden;text-overflow:ellipsis}.voice small{color:var(--muted)}
+.help{color:var(--muted);font-size:13px}.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.meter{height:6px;background:#0d1116;border-radius:99px;overflow:hidden;margin-top:10px}.meter>div{height:100%;width:0;background:var(--accent);transition:width .2s}.log{max-height:170px;overflow:auto;background:#0a0d11;border:1px solid var(--line);border-radius:10px;padding:10px;color:var(--muted);font:12px ui-monospace,monospace;white-space:pre-wrap}
+@media(max-width:800px){.grid{grid-template-columns:1fr}.top{align-items:start;flex-direction:column}}
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <div><h1>Rice Ball Ninja</h1><div class="sub">Personal browser voice studio — local voice cloning and dialogue</div></div>
+    <div class="status" id="status">Model not loaded</div>
+  </div>
+
+  <div class="grid">
+    <section class="card stack">
+      <h2>Voices</h2>
+      <div class="help">Add a short, clear sample for each speaker. Voice samples stay in this browser.</div>
+      <input id="voiceFile" type="file" accept="audio/*">
+      <input id="voiceName" type="text" placeholder="Voice name, e.g. Mike">
+      <button id="addVoice">Add voice</button>
+      <div id="voices"></div>
+      <div class="help">Chrome/Edge with WebGPU is recommended. The first model load is large and is cached by the browser.</div>
+    </section>
+
+    <section class="card">
+      <h2>Dialogue / Script</h2>
+      <div class="help">Use one line per speaker: <code>Voice 1 [Mike] Hello there. [laugh] This is exciting!</code></div>
+      <textarea id="script">Voice 1 [Mike] Hey Aru, are you ready?
+Voice 2 [Aru] [excited] Almost! Give me one second.
+Voice 1 [Mike] [laugh] Take your time.
+Voice 2 [Aru] Okay, let's go!</textarea>
+      <div class="toolbar">
+        <button id="loadModel">Load voice model</button>
+        <button id="generate" class="primary" disabled>Generate MP3</button>
+        <button id="play" disabled>Play</button>
+        <button id="download" disabled>Download MP3</button>
+      </div>
+      <div class="meter"><div id="progress"></div></div>
+      <div id="log" class="log" style="margin-top:10px">Ready.</div>
+      <audio id="player" controls style="width:100%;margin-top:12px"></audio>
+    </section>
+  </div>
+</main>
+
+<script type="module">
+import { VoxShot, ChatterboxEngine } from "https://esm.sh/voxshot";
+import { Mp3Encoder } from "https://esm.sh/@breezystack/lamejs";
+
+const $ = id => document.getElementById(id);
+const log = m => { $("log").textContent += "\n" + m; $("log").scrollTop = $("log").scrollHeight; };
+const setStatus = m => $("status").textContent = m;
+let tts = null;
+let outputBlob = null;
+let outputUrl = null;
+const voices = new Map();
+
+function renderVoices(){
+  $("voices").innerHTML = "";
+  for (const [name] of voices){
+    const row = document.createElement("div"); row.className="voice";
+    const n = document.createElement("div"); n.className="name"; n.textContent=name;
+    const del = document.createElement("button"); del.textContent="Remove";
+    del.onclick=async()=>{ try{await tts?.deleteVoice(name)}catch{} voices.delete(name); renderVoices(); };
+    row.append(n,del); $("voices").appendChild(row);
+  }
+}
+
+$("loadModel").onclick = async()=>{
+  $("loadModel").disabled=true;
+  try{
+    setStatus("Loading model…"); log("Loading Chatterbox browser model. The first load can be large.");
+    const engine = new ChatterboxEngine({ onProgress: (p) => { if (p?.status) log("Model: " + p.status + (p.plan ? " ("+p.plan+")" : "")); } });\n    tts = await VoxShot.create({engine, device:"auto", minChunkLength:20});
+    setStatus("Model ready"); log("Model ready on " + (tts.device || "browser"));
+    $("generate").disabled=false;
+  }catch(e){
+    console.error(e); setStatus("Load failed"); log("ERROR: " + (e?.message || e));
+    $("loadModel").disabled=false;
+  }
+};
+
+$("addVoice").onclick = async()=>{
+  if(!tts){ log("Load the model first."); return; }
+  const file=$("voiceFile").files[0], name=$("voiceName").value.trim();
+  if(!file || !name){ log("Choose an audio file and enter a voice name."); return; }
+  try{
+    log("Cloning " + name + "…");
+    await tts.cloneVoice(file);
+    await tts.saveVoice(name);
+    voices.set(name,true); renderVoices();
+    $("voiceName").value=""; $("voiceFile").value="";
+    log("Voice saved: " + name);
+  }catch(e){console.error(e);log("Voice error: "+(e?.message||e));}
+};
+
+function parseScript(text){
+  const out=[];
+  for(const raw of text.split(/\r?\n/)){
+    const line=raw.trim(); if(!line) continue;
+    const m=line.match(/^([^\[]+?)\s*\[([^\]]+)\]\s*(.*)$/);
+    if(m) out.push({speaker:m[2].trim(),text:m[3].trim()});
+    else out.push({speaker:"default",text:line});
+  }
+  return out;
+}
+
+function pcmToMp3(chunks, sampleRate){
+  let total=0; for(const c of chunks) total += c.length;
+  const pcm=new Int16Array(total); let p=0;
+  for(const c of chunks){ for(let i=0;i<c.length;i++){let v=Math.max(-1,Math.min(1,c[i]));pcm[p++]=v<0?v*32768:v*32767;} }
+  const enc=new Mp3Encoder(1,sampleRate,128), block=1152, mp3=[];
+  for(let i=0;i<pcm.length;i+=block){const part=pcm.subarray(i,Math.min(i+block,pcm.length));const buf=enc.encodeBuffer(part);if(buf.length)mp3.push(new Int8Array(buf));}
+  const end=enc.flush();if(end.length)mp3.push(new Int8Array(end));
+  return new Blob(mp3,{type:"audio/mpeg"});
+}
+
+$("generate").onclick = async()=>{
+  if(!tts) return;
+  const lines=parseScript($("script").value);
+  if(!lines.length){log("Nothing to generate.");return;}
+  $("generate").disabled=true; $("play").disabled=true; $("download").disabled=true;
+  try{
+    const chunks=[]; let sr=tts.sampleRate||24000;
+    for(let i=0;i<lines.length;i++){
+      const x=lines[i];
+      log("Generating " + x.speaker + " ("+(i+1)+"/"+lines.length+")…");
+      if(x.speaker!=="default"){
+        if(!voices.has(x.speaker)){ throw new Error("No saved voice named ""+x.speaker+""."); }
+        await tts.useVoice(x.speaker);
+      }
+      const tagMap = { "[laugh]": 0.8, "[sigh]": 0.45, "[excited]": 0.85, "[angry]": 0.8, "[sad]": 0.35, "[happy]": 0.75, "[whisper]": 0.25, "[yell]": 0.9 };\n      const found = (x.text.match(/\\[[^\\]]+\\]/g) || []).map(s => s.toLowerCase());\n      const expressiveness = found.reduce((v,t) => tagMap[t] ?? v, 0.5);\n      const audio=await tts.speak(x.text, { expressiveness });
+      sr=audio.sampleRate||sr;
+      chunks.push(audio.samples);
+      $("progress").style.width=((i+1)/lines.length*100)+"%";
+    }
+    outputBlob=pcmToMp3(chunks,sr);
+    if(outputUrl) URL.revokeObjectURL(outputUrl);
+    outputUrl=URL.createObjectURL(outputBlob);
+    $("player").src=outputUrl; $("play").disabled=false; $("download").disabled=false;
+    log("Finished. MP3 is ready.");
+  }catch(e){console.error(e);log("ERROR: "+(e?.message||e));}
+  finally{$("generate").disabled=false;}
+};
+
+$("play").onclick=()=> $("player").play();
+$("download").onclick=()=>{
+  if(!outputUrl)return;
+  const a=document.createElement("a");a.href=outputUrl;a.download="rice-ball-ninja.mp3";a.click();
+};
+</script>
+</body>
+</html>
