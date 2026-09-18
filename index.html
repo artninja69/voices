@@ -81,7 +81,8 @@ $("loadModel").onclick = async()=>{
   $("loadModel").disabled=true;
   try{
     setStatus("Loading model…"); log("Loading Chatterbox browser model. The first load can be large.");
-    const engine = new ChatterboxEngine({ onProgress: (p) => { if (p?.status) log("Model: " + p.status + (p.plan ? " ("+p.plan+")" : "")); } });\n    tts = await VoxShot.create({engine, device:"auto", minChunkLength:20});
+    const engine = new ChatterboxEngine({ onProgress: (p) => { if (p?.status) log("Model: " + p.status + (p.plan ? " ("+p.plan+")" : "")); } });
+    tts = await VoxShot.create({engine, device:"auto", minChunkLength:20});
     setStatus("Model ready"); log("Model ready on " + (tts.device || "browser"));
     $("generate").disabled=false;
   }catch(e){
@@ -139,7 +140,10 @@ $("generate").onclick = async()=>{
         if(!voices.has(x.speaker)){ throw new Error("No saved voice named ""+x.speaker+""."); }
         await tts.useVoice(x.speaker);
       }
-      const tagMap = { "[laugh]": 0.8, "[sigh]": 0.45, "[excited]": 0.85, "[angry]": 0.8, "[sad]": 0.35, "[happy]": 0.75, "[whisper]": 0.25, "[yell]": 0.9 };\n      const found = (x.text.match(/\\[[^\\]]+\\]/g) || []).map(s => s.toLowerCase());\n      const expressiveness = found.reduce((v,t) => tagMap[t] ?? v, 0.5);\n      const audio=await tts.speak(x.text, { expressiveness });
+      const tagMap = { "[laugh]": 0.8, "[sigh]": 0.45, "[excited]": 0.85, "[angry]": 0.8, "[mad]": 0.85, "[sad]": 0.35, "[happy]": 0.75, "[whisper]": 0.25, "[yell]": 0.9, "[yelling]": 0.9, "[fast talking]": 0.65 };\n      const found = (x.text.match(/\[[^\]]+\]/g) || []).map(s => s.toLowerCase());\n      const expressiveness = found.reduce((v,t) => tagMap[t] ?? v, 0.5);\n      const cleanText = x.text.replace(/\[[^\]]+\]/g, "").replace(/\s{2,}/g, " ").trim();
+      if (!cleanText) { log("Skipping tag-only line."); continue; }
+      const speed = found.includes("[fast talking]") ? 1.2 : 1.0;
+      const audio=await tts.speak(cleanText, { expressiveness, speed });
       sr=audio.sampleRate||sr;
       chunks.push(audio.samples);
       $("progress").style.width=((i+1)/lines.length*100)+"%";
